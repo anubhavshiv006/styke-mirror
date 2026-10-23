@@ -1,0 +1,11 @@
+{
+  "name": "Watch & Wear - Living Room Magic Mirror & Family Fashion Show",
+  "description": "Pause a TV show, pick an actor's outfit, try it on live with pose tracking and garment overlay, strike a pose, and let the family vote on the best look.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
