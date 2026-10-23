@@ -3,28 +3,19 @@ import {
   Camera, 
   RotateCcw, 
   Sparkles, 
-  Mic, 
   CheckCircle2, 
-  Flame, 
-  Volume2, 
   ChevronRight, 
-  Palette, 
-  Layers, 
-  User, 
   Sliders, 
   ArrowLeft,
-  ArrowRight,
-  Eye,
-  Info,
+  Rotate3d,
   Check,
-  Rotate3d
+  Download
 } from 'lucide-react';
-import { POSE_TARGETS } from '../data/poses.ts';
 import { ALL_WARDROBE_OUTFITS } from '../data/clips.ts';
-import { Keypoint, Outfit, Player, PoseFeedback, PoseTarget } from '../types.ts';
+import { Outfit, Player } from '../types.ts';
 import { sound } from '../utils/audio.ts';
 import { computeGarmentTransform, drawGarmentOnCanvas, GarmentFitOptions } from '../utils/garmentRenderer.ts';
-import { evaluatePose, getSimulatedKeypoints } from '../utils/poseTracker.ts';
+import { getSimulatedKeypoints } from '../utils/poseTracker.ts';
 import { GarmentViewer3D } from './GarmentViewer3D.tsx';
 
 interface MagicMirrorProps {
@@ -51,45 +42,31 @@ export const MagicMirror: React.FC<MagicMirrorProps> = ({
   onBackToWatch,
   onSelectOutfit,
   activePlayerIndex,
-  totalPlayers,
-  onOpenVoice,
 }) => {
-  const [currentTarget, setCurrentTarget] = useState<PoseTarget>(
-    POSE_TARGETS.find(p => p.id === activePlayer.targetPoseId) || POSE_TARGETS[0]
-  );
-
-  // 2D Live Fit vs 3D Turntable View
+  // Mode: 2D Live AR Camera Fit vs 3D 360° Studio View
   const [viewMode, setViewMode] = useState<'2d' | '3d'>('2d');
 
+  // Camera stream state
   const [useRealCamera, setUseRealCamera] = useState<boolean>(true);
   const [cameraActive, setCameraActive] = useState<boolean>(false);
-  const [cameraError, setCameraError] = useState<string | null>(null);
 
-  // Interactive Real Clothes Fit Controls (Scale, Position, Width, Fabric Style)
-  const [fitScale, setFitScale] = useState<number>(1.0);
+  // Lenskart-style Body Fit Controls (Scale, Position, Width, Fabric Style)
+  const [fitScale, setFitScale] = useState<number>(1.05);
   const [fitOffsetY, setFitOffsetY] = useState<number>(0);
-  const [fitStretchX, setFitStretchX] = useState<number>(1.0);
+  const [fitOffsetX, setFitOffsetX] = useState<number>(0);
+  const [fitStretchX] = useState<number>(1.0);
   const [blendMode, setBlendMode] = useState<'original' | 'tint' | 'vivid'>('original');
-  const [showFitHUD, setShowFitHUD] = useState<boolean>(true);
+  const [showFitHUD, setShowFitHUD] = useState<boolean>(false);
+  const [bodyMode, setBodyMode] = useState<'desk' | 'standing'>('desk');
 
-  // Quick wear rail filter tab for Men / Women / All
-  const [railGenderFilter, setRailGenderFilter] = useState<'all' | 'male' | 'female'>('all');
+  // Interactive Drag-to-Position directly on camera
+  const isDraggingRef = useRef<boolean>(false);
+  const lastPointerPosRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
 
-  // Simulation parameters for testing without standing
-  const [simArmSway, setSimArmSway] = useState<number>(0);
-  const [simShoulderTilt, setSimShoulderTilt] = useState<number>(0);
-  const [autoSway, setAutoSway] = useState<boolean>(true);
+  // Bottom Rail Filter: All | Male | Female | Festive | Formal
+  const [railFilter, setRailFilter] = useState<'all' | 'male' | 'female' | 'festive' | 'formal'>('all');
 
-  // Pose evaluation & countdown hold state
-  const [feedback, setFeedback] = useState<PoseFeedback>({
-    score: 0,
-    tip: 'Step into the camera view to align your pose',
-    isReadyToLock: false,
-    holdProgress: 0,
-    detectedAngles: { leftArm: 0, rightArm: 0, shoulderTilt: 0 },
-  });
-
-  const [holdMs, setHoldMs] = useState<number>(0);
+  // Captured Snapshot state
   const [isLocked, setIsLocked] = useState<boolean>(false);
   const [capturedSnapshot, setCapturedSnapshot] = useState<string | null>(null);
   const [flashActive, setFlashActive] = useState<boolean>(false);
@@ -97,9 +74,8 @@ export const MagicMirror: React.FC<MagicMirrorProps> = ({
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const animFrameRef = useRef<number | null>(null);
-  const holdStartTimeRef = useRef<number | null>(null);
 
-  // Prime Video color swatches
+  // Designer color swatches
   const colorOptions = [
     { label: 'Royal Blue', hex: '#0284c7' },
     { label: 'Crimson Red', hex: '#dc2626' },
@@ -126,12 +102,10 @@ export const MagicMirror: React.FC<MagicMirrorProps> = ({
           videoRef.current.onloadedmetadata = () => {
             videoRef.current?.play();
             setCameraActive(true);
-            setCameraError(null);
           };
         }
       } catch (err: any) {
         console.warn('Webcam fallback to simulation:', err);
-        setCameraError('Webcam not accessible. Pose Simulator enabled!');
         setCameraActive(false);
         setUseRealCamera(false);
       }
@@ -150,10 +124,8 @@ export const MagicMirror: React.FC<MagicMirrorProps> = ({
     };
   }, [useRealCamera]);
 
-  // Main rendering loop for Magic Mirror
+  // Main rendering loop for Live AR Camera Fit
   useEffect(() => {
-    let lastTickTime = 0;
-
     const render = (time: number) => {
       const canvas = canvasRef.current;
       if (!canvas) {
@@ -174,7 +146,7 @@ export const MagicMirror: React.FC<MagicMirrorProps> = ({
         ctx.drawImage(videoRef.current, 0, 0, w, h);
         ctx.restore();
       } else {
-        // High quality simulated studio mirror backdrop
+        // High quality simulated luxury studio mirror backdrop
         ctx.fillStyle = '#060a12';
         ctx.fillRect(0, 0, w, h);
 
@@ -186,7 +158,7 @@ export const MagicMirror: React.FC<MagicMirrorProps> = ({
         ctx.fillStyle = spot;
         ctx.fillRect(0, 0, w, h);
 
-        // Floor reflection grid
+        // Subtle studio grid floor
         ctx.strokeStyle = 'rgba(0, 168, 225, 0.08)';
         ctx.lineWidth = 1;
         for (let x = 0; x < w; x += 60) {
@@ -198,61 +170,43 @@ export const MagicMirror: React.FC<MagicMirrorProps> = ({
       }
 
       // 2. Compute keypoints
-      let variation = { armSway: simArmSway, shoulderTilt: simShoulderTilt, postureDrift: 0 };
-      if (autoSway && !isLocked) {
+      // Zero auto-sway when camera is active so clothes stay solidly worn on user
+      let variation = { armSway: 0, shoulderTilt: 0, postureDrift: 0 };
+      if (!cameraActive && !isLocked) {
         const t = time * 0.002;
         variation.armSway = Math.sin(t) * 0.15;
         variation.shoulderTilt = Math.cos(t * 0.8) * 0.1;
       }
 
-      const keypoints = getSimulatedKeypoints(currentTarget, variation);
-
-      // 3. Draw subtle alignment guides (minimalist corners, keeping camera feed 100% clear)
-      if (!isLocked) {
-        ctx.save();
-        ctx.strokeStyle = 'rgba(0, 168, 225, 0.35)';
-        ctx.lineWidth = 2.5;
-
-        // Subtle target corner brackets
-        const marginX = w * 0.18;
-        const marginY = h * 0.08;
-        const cornerLen = 30;
-
-        // Top-left
-        ctx.beginPath();
-        ctx.moveTo(marginX, marginY + cornerLen);
-        ctx.lineTo(marginX, marginY);
-        ctx.lineTo(marginX + cornerLen, marginY);
-        ctx.stroke();
-
-        // Top-right
-        ctx.beginPath();
-        ctx.moveTo(w - marginX - cornerLen, marginY);
-        ctx.lineTo(w - marginX, marginY);
-        ctx.lineTo(w - marginX, marginY + cornerLen);
-        ctx.stroke();
-
-        // Bottom-left
-        ctx.beginPath();
-        ctx.moveTo(marginX, h - marginY - cornerLen);
-        ctx.lineTo(marginX, h - marginY);
-        ctx.lineTo(marginX + cornerLen, h - marginY);
-        ctx.stroke();
-
-        // Bottom-right
-        ctx.beginPath();
-        ctx.moveTo(w - marginX - cornerLen, h - marginY);
-        ctx.lineTo(w - marginX, h - marginY);
-        ctx.lineTo(w - marginX, h - marginY - cornerLen);
-        ctx.stroke();
-
-        ctx.restore();
+      let keypoints = getSimulatedKeypoints({ id: 'namaste-swag', name: 'Standard', difficulty: 'Easy', idealAngles: { leftElbowWrist: 90, rightElbowWrist: 90, shoulderTilt: 0 } }, variation);
+      
+      if (bodyMode === 'desk') {
+        // Calibrated for user sitting at desk in front of webcam: head is higher and shoulders closer
+        keypoints = {
+          ...keypoints,
+          nose: { name: 'nose', x: 0.50, y: 0.20, confidence: 0.95 },
+          left_shoulder: { name: 'left_shoulder', x: 0.30, y: 0.42, confidence: 0.95 },
+          right_shoulder: { name: 'right_shoulder', x: 0.70, y: 0.42, confidence: 0.95 },
+          left_hip: { name: 'left_hip', x: 0.35, y: 0.82, confidence: 0.90 },
+          right_hip: { name: 'right_hip', x: 0.65, y: 0.82, confidence: 0.90 },
+        };
+      } else {
+        // Standing view
+        keypoints = {
+          ...keypoints,
+          nose: { name: 'nose', x: 0.50, y: 0.18, confidence: 0.95 },
+          left_shoulder: { name: 'left_shoulder', x: 0.37, y: 0.33, confidence: 0.95 },
+          right_shoulder: { name: 'right_shoulder', x: 0.63, y: 0.33, confidence: 0.95 },
+          left_hip: { name: 'left_hip', x: 0.41, y: 0.62, confidence: 0.90 },
+          right_hip: { name: 'right_hip', x: 0.59, y: 0.62, confidence: 0.90 },
+        };
       }
 
-      // 4. Warp & Draw 2D Real Garment Overlay on Body (Zero cartoon graphics, pure photo overlay)
+      // 3. Draw 2D Real Garment Overlay on Body (Pure Isolated Cutout, Zero Cartoon Shapes, Zero Background)
       const fitOptions: GarmentFitOptions = {
         scale: fitScale,
         offsetY: fitOffsetY,
+        offsetX: fitOffsetX,
         stretchX: fitStretchX,
         blendMode: blendMode,
         opacity: 0.98,
@@ -260,13 +214,6 @@ export const MagicMirror: React.FC<MagicMirrorProps> = ({
       const garmentTransform = computeGarmentTransform(keypoints, w, h, outfit.renderType, fitOptions);
       if (garmentTransform) {
         drawGarmentOnCanvas(ctx, garmentTransform, outfit, outfitColor, fitOptions);
-      }
-
-      // 5. Evaluate pose accuracy for real-time coach feedback
-      // Auto-capture is explicitly disabled per user request: user controls shutter manually
-      if (!isLocked) {
-        const evalResult = evaluatePose(keypoints, currentTarget, 0, 2000);
-        setFeedback(evalResult);
       }
 
       animFrameRef.current = requestAnimationFrame(render);
@@ -279,88 +226,111 @@ export const MagicMirror: React.FC<MagicMirrorProps> = ({
       }
     };
   }, [
-    currentTarget,
     outfit,
     outfitColor,
     cameraActive,
-    simArmSway,
-    simShoulderTilt,
-    autoSway,
     isLocked,
-    holdMs,
     fitScale,
     fitOffsetY,
+    fitOffsetX,
     fitStretchX,
     blendMode,
+    bodyMode,
   ]);
+
+  // Direct Drag-to-Body Fit Handlers
+  const handlePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if ((e.target as HTMLElement).tagName === 'BUTTON' || (e.target as HTMLElement).closest('button')) return;
+    isDraggingRef.current = true;
+    lastPointerPosRef.current = { x: e.clientX, y: e.clientY };
+  };
+
+  const handlePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!isDraggingRef.current) return;
+    const dx = e.clientX - lastPointerPosRef.current.x;
+    const dy = e.clientY - lastPointerPosRef.current.y;
+    lastPointerPosRef.current = { x: e.clientX, y: e.clientY };
+    setFitOffsetX(prev => Math.max(-250, Math.min(250, prev + dx * 1.5)));
+    setFitOffsetY(prev => Math.max(-200, Math.min(200, prev + dy * 1.5)));
+  };
+
+  const handlePointerUp = () => {
+    isDraggingRef.current = false;
+  };
+
+  // Manual Snapshot Capture
+  const handleManualLock = () => {
+    sound.playShutter();
+    setIsLocked(true);
+    setFlashActive(true);
+    setTimeout(() => setFlashActive(false), 250);
+
+    const canvas = canvasRef.current;
+    if (canvas) {
+      const dataUrl = canvas.toDataURL('image/jpeg', 0.95);
+      setCapturedSnapshot(dataUrl);
+      onSnapshotCaptured(activePlayerIndex, dataUrl, 98);
+    }
+  };
 
   const handleRetake = () => {
     sound.playClick();
     setIsLocked(false);
     setCapturedSnapshot(null);
-    setHoldMs(0);
-    holdStartTimeRef.current = null;
   };
 
-  const handleManualLock = () => {
-    sound.playShutter();
-    setIsLocked(true);
-    setFlashActive(true);
-    setTimeout(() => setFlashActive(false), 300);
-
-    const canvas = canvasRef.current;
-    if (canvas) {
-      const dataUrl = canvas.toDataURL('image/jpeg', 0.92);
-      setCapturedSnapshot(dataUrl);
-      onSnapshotCaptured(activePlayerIndex, dataUrl, Math.max(90, feedback.score));
-    }
-  };
-
+  // Filter outfits for bottom Lenskart-style slider
   const filteredRailOutfits = ALL_WARDROBE_OUTFITS.filter(item => {
-    if (railGenderFilter === 'all') return true;
-    return item.gender === railGenderFilter;
+    if (railFilter === 'all') return true;
+    if (railFilter === 'male') return item.gender === 'male';
+    if (railFilter === 'female') return item.gender === 'female';
+    if (railFilter === 'festive') return item.category.toLowerCase().includes('festive');
+    if (railFilter === 'formal') return item.category.toLowerCase().includes('formal');
+    return true;
   });
 
   return (
-    <div className="relative w-full min-h-[calc(100vh-65px)] bg-[#040810] flex flex-col p-3 sm:p-6 select-none overflow-x-hidden">
+    <div className="relative w-full min-h-[calc(100vh-65px)] bg-[#040810] flex flex-col p-2 sm:p-5 select-none overflow-x-hidden">
       <video ref={videoRef} className="hidden" playsInline muted autoPlay />
 
       {/* Screen Camera Flash */}
       {flashActive && (
-        <div className="fixed inset-0 z-50 bg-white pointer-events-none transition-opacity duration-300 animate-out fade-out" />
+        <div className="fixed inset-0 z-50 bg-white pointer-events-none transition-opacity duration-200 animate-out fade-out" />
       )}
 
-      {/* Top Header Controls Bar */}
-      <div className="max-w-[1700px] mx-auto w-full flex items-center justify-between mb-4 z-20">
+      {/* =========================================================================
+          TOP MINIMAL HEADER BAR (LENSKART STYLE)
+         ========================================================================= */}
+      <div className="max-w-[1700px] mx-auto w-full flex items-center justify-between mb-3 z-20">
         <div className="flex items-center gap-3">
           <button
             onClick={() => {
               sound.playClick();
               onBackToWatch();
             }}
-            className="p-2 rounded-full bg-slate-900/90 hover:bg-slate-800 text-slate-300 hover:text-white border border-slate-700 transition"
-            title="Back to Scene"
+            className="p-2 rounded-full bg-slate-900/90 hover:bg-slate-800 text-slate-300 hover:text-white border border-slate-800 transition"
+            title="Back to Catalog"
           >
             <ArrowLeft className="w-4 h-4" />
           </button>
           <div>
             <div className="flex items-center gap-2">
-              <h1 className="text-sm sm:text-base font-bold text-white">
-                Live Magic Mirror
+              <h1 className="text-sm sm:text-base font-bold text-white tracking-tight">
+                Virtual Clothes Try-On
               </h1>
               <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded bg-[#00a8e1]/15 text-[#38bdf8] border border-[#00a8e1]/30">
-                Player {activePlayerIndex + 1} of {totalPlayers}: {activePlayer.name}
+                Lenskart-Style AR
               </span>
             </div>
             <p className="text-xs text-slate-400">
-              Live AR garment try-on with real-time pose tracking &amp; camera overlay
+              Live webcam clothing drape &amp; 3D couture showroom
             </p>
           </div>
         </div>
 
-        <div className="flex items-center gap-2.5">
-          {/* 2D AR Fit vs 3D 360° Studio View Mode Toggle */}
-          <div className="flex items-center p-1 rounded-xl bg-slate-900/90 border border-slate-700/80 shadow-inner">
+        {/* View Mode Switcher (2D Live Cam vs 3D Showroom) */}
+        <div className="flex items-center gap-2">
+          <div className="flex items-center p-1 rounded-xl bg-slate-900/90 border border-slate-800 shadow-inner">
             <button
               onClick={() => {
                 sound.playClick();
@@ -373,7 +343,7 @@ export const MagicMirror: React.FC<MagicMirrorProps> = ({
               }`}
             >
               <Camera className="w-3.5 h-3.5" />
-              <span>2D AR Fit</span>
+              <span>Live Cam Fit</span>
             </button>
             <button
               onClick={() => {
@@ -387,45 +357,34 @@ export const MagicMirror: React.FC<MagicMirrorProps> = ({
               }`}
             >
               <Rotate3d className="w-3.5 h-3.5" />
-              <span>3D 360° View</span>
+              <span>3D Showroom</span>
             </button>
           </div>
 
-          {/* Camera On / Off Button (for 2D mode) */}
+          {/* Camera On / Off Button */}
           {viewMode === '2d' && (
             <button
               onClick={() => {
                 sound.playClick();
                 setUseRealCamera(prev => !prev);
               }}
-              className={`flex items-center gap-2 px-3.5 py-1.5 rounded-lg border text-xs font-bold transition shadow-sm ${
+              className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl border text-xs font-bold transition shadow-sm ${
                 cameraActive
-                  ? 'bg-emerald-950/90 border-emerald-500 text-emerald-300 shadow-[0_0_12px_rgba(16,185,129,0.3)]'
-                  : 'bg-slate-900 border-[#00a8e1]/60 text-[#38bdf8] hover:bg-slate-800'
+                  ? 'bg-emerald-950/80 border-emerald-500/50 text-emerald-300'
+                  : 'bg-slate-900 border-[#00a8e1]/50 text-[#38bdf8] hover:bg-slate-800'
               }`}
             >
-              <Camera className="w-4 h-4" />
-              <span>{cameraActive ? '● Camera Active' : 'Turn On Camera'}</span>
-            </button>
-          )}
-
-          {/* Quick Snap Shutter Button (Top-Right) */}
-          {!isLocked && (
-            <button
-              onClick={handleManualLock}
-              className="flex items-center gap-1.5 px-4 py-1.5 rounded-lg bg-[#00a8e1] hover:bg-[#0094c8] text-slate-950 text-xs font-black shadow-md shadow-[#00a8e1]/20 transition transform hover:scale-105"
-            >
-              <Camera className="w-3.5 h-3.5 fill-current" />
-              <span>Capture Photo</span>
+              <span className={`w-2 h-2 rounded-full ${cameraActive ? 'bg-emerald-400 animate-pulse' : 'bg-slate-500'}`} />
+              <span>{cameraActive ? 'Camera On' : 'Turn On Camera'}</span>
             </button>
           )}
         </div>
       </div>
 
       {/* =========================================================================
-          STAGE 1: THE MAGIC MIRROR (2D AR FIT OR 3D 360° STUDIO VIEW)
+          MAIN VIRTUAL TRY-ON VIEWPORT (CLEAN & SLEEK)
          ========================================================================= */}
-      <div className="max-w-[1700px] mx-auto w-full mb-6">
+      <div className="max-w-[1700px] mx-auto w-full mb-3">
         {viewMode === '3d' ? (
           /* --- 3D 360° STUDIO VIEW --- */
           <GarmentViewer3D
@@ -436,47 +395,70 @@ export const MagicMirror: React.FC<MagicMirrorProps> = ({
           />
         ) : (
           /* --- 2D AR LIVE CAMERA MIRROR --- */
-          <div className="relative aspect-[16/9] max-h-[580px] w-full mx-auto rounded-2xl bg-black overflow-hidden border border-slate-800 shadow-2xl">
+          <div 
+            className="relative aspect-[16/9] max-h-[560px] w-full mx-auto rounded-2xl bg-black overflow-hidden border border-slate-800 shadow-2xl cursor-grab active:cursor-grabbing select-none"
+            onPointerDown={handlePointerDown}
+            onPointerMove={handlePointerMove}
+            onPointerUp={handlePointerUp}
+            onPointerLeave={handlePointerUp}
+          >
             <canvas
               ref={canvasRef}
               width={1280}
               height={720}
-              className="w-full h-full object-cover"
+              className="w-full h-full object-cover pointer-events-none"
             />
 
-            {/* Minimal Live Status Tag & Real Garment Indicator (Top-Left) */}
+            {/* Top-Left: Outfit Tag Pill */}
             <div className="absolute top-3 left-3 z-20 flex flex-col gap-1.5 pointer-events-none">
-              <div className="px-3 py-1 rounded-full bg-black/80 backdrop-blur-md border border-slate-700/80 text-white text-xs font-semibold flex items-center gap-2 shadow-lg">
-                <span className={`w-2 h-2 rounded-full ${cameraActive ? 'bg-emerald-400 animate-pulse' : 'bg-[#00a8e1]'}`} />
-                <span className="font-mono text-[11px]">
-                  {cameraActive ? 'LIVE CAMERA AR FIT' : 'STUDIO MIRROR SIMULATOR'}
-                </span>
-              </div>
-              <div className="px-2.5 py-1 rounded-lg bg-black/75 backdrop-blur-md border border-[#00a8e1]/30 text-white text-[11px] flex items-center gap-1.5 shadow-md">
-                <Sparkles className="w-3 h-3 text-[#00a8e1]" />
-                <span className="text-[#38bdf8] font-bold">Real Fabric:</span>
-                <span className="text-slate-200 truncate max-w-[200px]">{outfit.name}</span>
+              <div className="px-3 py-1.5 rounded-xl bg-black/85 backdrop-blur-md border border-slate-800 text-white text-xs font-semibold flex items-center gap-2 shadow-lg">
+                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                <span className="text-slate-300 font-medium">Wearing:</span>
+                <span className="text-[#38bdf8] font-bold truncate max-w-[220px]">{outfit.name}</span>
               </div>
             </div>
 
-            {/* Pose Match & Fit Toolbar (Top-Right) */}
+            {/* Top-Right: Adjust Fit & Color Toolbar */}
             <div className="absolute top-3 right-3 z-20 flex items-center gap-2">
-              <div className="px-3 py-1 rounded-full bg-black/75 backdrop-blur-md border border-slate-700/80 text-xs font-mono font-bold flex items-center gap-2 shadow-lg">
-                <span className="text-slate-400">Match:</span>
-                <span className={feedback.score >= 80 ? 'text-emerald-400' : 'text-amber-400'}>
-                  {feedback.score}%
-                </span>
+              {/* Color Tint Swatches */}
+              <div 
+                className="flex items-center gap-1.5 p-1 rounded-xl bg-black/80 backdrop-blur-md border border-slate-800 shadow-lg"
+                onClick={(e) => e.stopPropagation()}
+                onPointerDown={(e) => e.stopPropagation()}
+              >
+                {colorOptions.slice(0, 4).map((c) => {
+                  const isSelected = outfitColor.toLowerCase() === c.hex.toLowerCase();
+                  return (
+                    <button
+                      key={c.hex}
+                      onClick={() => {
+                        sound.playColorChime();
+                        setBlendMode('tint');
+                        onChangeColor(c.hex);
+                      }}
+                      title={c.label}
+                      className={`w-5 h-5 rounded-full border transition-all ${
+                        isSelected && blendMode === 'tint'
+                          ? 'border-white scale-125 shadow-[0_0_8px_#00a8e1] ring-1 ring-[#00a8e1]'
+                          : 'border-white/20 hover:scale-110 opacity-70 hover:opacity-100'
+                      }`}
+                      style={{ backgroundColor: c.hex }}
+                    />
+                  );
+                })}
               </div>
 
+              {/* Adjust Fit Toggle Button */}
               <button
-                onClick={() => {
+                onClick={(e) => {
+                  e.stopPropagation();
                   sound.playClick();
                   setShowFitHUD(prev => !prev);
                 }}
-                className={`px-3 py-1 rounded-full text-xs font-bold border backdrop-blur-md transition flex items-center gap-1.5 shadow-lg ${
+                className={`px-3 py-1.5 rounded-xl text-xs font-bold border backdrop-blur-md transition flex items-center gap-1.5 shadow-lg ${
                   showFitHUD
                     ? 'bg-[#00a8e1] text-slate-950 border-white/20'
-                    : 'bg-black/75 text-slate-300 hover:text-white border-slate-700'
+                    : 'bg-black/80 text-slate-300 hover:text-white border-slate-800'
                 }`}
                 title="Adjust garment size & position on body"
               >
@@ -487,18 +469,22 @@ export const MagicMirror: React.FC<MagicMirrorProps> = ({
 
             {/* Floating Live Fit HUD Tool */}
             {showFitHUD && (
-              <div className="absolute top-12 right-3 z-30 bg-slate-950/92 backdrop-blur-md border border-slate-700/90 rounded-2xl p-3.5 shadow-2xl w-64 text-xs text-white animate-in fade-in zoom-in-95 duration-150">
-                <div className="flex items-center justify-between mb-2.5 pb-1.5 border-b border-slate-800">
+              <div 
+                className="absolute top-12 right-3 z-30 bg-slate-950/92 backdrop-blur-md border border-slate-700/90 rounded-2xl p-3.5 shadow-2xl w-64 text-xs text-white animate-in fade-in zoom-in-95 duration-150"
+                onClick={(e) => e.stopPropagation()}
+                onPointerDown={(e) => e.stopPropagation()}
+              >
+                <div className="flex items-center justify-between mb-2 pb-1.5 border-b border-slate-800">
                   <span className="font-bold text-[#38bdf8] flex items-center gap-1.5">
                     <Sliders className="w-3.5 h-3.5" />
-                    <span>Real Garment Fit</span>
+                    <span>Body Fit Controls</span>
                   </span>
                   <button
                     onClick={() => {
                       sound.playClick();
-                      setFitScale(1.0);
+                      setFitScale(1.05);
                       setFitOffsetY(0);
-                      setFitStretchX(1.0);
+                      setFitOffsetX(0);
                       setBlendMode('original');
                     }}
                     className="text-[10px] text-slate-400 hover:text-white hover:underline flex items-center gap-1 font-mono"
@@ -509,10 +495,49 @@ export const MagicMirror: React.FC<MagicMirrorProps> = ({
                   </button>
                 </div>
 
+                {/* Body Pose Mode: Desk vs Standing */}
+                <div className="mb-2">
+                  <span className="text-[10px] text-slate-400 block mb-1 uppercase font-mono">Your Posture:</span>
+                  <div className="grid grid-cols-2 gap-1 font-semibold text-[10px]">
+                    <button
+                      onClick={() => {
+                        sound.playClick();
+                        setBodyMode('desk');
+                        setFitOffsetY(0);
+                        setFitOffsetX(0);
+                        setFitScale(1.05);
+                      }}
+                      className={`py-1.5 rounded-lg text-center transition flex items-center justify-center gap-1 ${
+                        bodyMode === 'desk'
+                          ? 'bg-[#00a8e1] text-slate-950 font-bold shadow-sm'
+                          : 'bg-slate-900 text-slate-400 hover:text-white border border-slate-800'
+                      }`}
+                    >
+                      <span>💻 Sitting at Desk</span>
+                    </button>
+                    <button
+                      onClick={() => {
+                        sound.playClick();
+                        setBodyMode('standing');
+                        setFitOffsetY(0);
+                        setFitOffsetX(0);
+                        setFitScale(0.95);
+                      }}
+                      className={`py-1.5 rounded-lg text-center transition flex items-center justify-center gap-1 ${
+                        bodyMode === 'standing'
+                          ? 'bg-[#00a8e1] text-slate-950 font-bold shadow-sm'
+                          : 'bg-slate-900 text-slate-400 hover:text-white border border-slate-800'
+                      }`}
+                    >
+                      <span>🧍 Standing</span>
+                    </button>
+                  </div>
+                </div>
+
                 {/* Garment Scale */}
-                <div className="mb-2.5">
+                <div className="mb-2">
                   <div className="flex justify-between text-[11px] text-slate-300 mb-1 font-mono">
-                    <span>Fit Size:</span>
+                    <span>Size Scale:</span>
                     <span className="text-[#38bdf8] font-bold">{Math.round(fitScale * 100)}%</span>
                   </div>
                   <div className="flex items-center gap-1.5">
@@ -540,31 +565,47 @@ export const MagicMirror: React.FC<MagicMirrorProps> = ({
                   </div>
                 </div>
 
-                {/* Vertical Position */}
-                <div className="mb-2.5">
+                {/* Position 4-Way Nudge */}
+                <div className="mb-2">
                   <div className="flex justify-between text-[11px] text-slate-300 mb-1 font-mono">
-                    <span>Height:</span>
-                    <span className="text-[#38bdf8] font-bold">{fitOffsetY > 0 ? `+${fitOffsetY}px` : `${fitOffsetY}px`}</span>
+                    <span>Nudge:</span>
+                    <span className="text-[#38bdf8] font-bold">X:{fitOffsetX} Y:{fitOffsetY}</span>
                   </div>
-                  <div className="grid grid-cols-2 gap-1.5">
+                  <div className="grid grid-cols-4 gap-1">
                     <button
-                      onClick={() => setFitOffsetY(y => Math.max(-80, y - 10))}
-                      className="py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 font-medium text-[11px] border border-slate-700 transition"
+                      onClick={() => setFitOffsetX(x => Math.max(-180, x - 15))}
+                      className="py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold text-xs border border-slate-700 transition"
+                      title="Nudge Left"
                     >
-                      ↑ Move Up
+                      ←
                     </button>
                     <button
-                      onClick={() => setFitOffsetY(y => Math.min(80, y + 10))}
-                      className="py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 font-medium text-[11px] border border-slate-700 transition"
+                      onClick={() => setFitOffsetX(x => Math.min(180, x + 15))}
+                      className="py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold text-xs border border-slate-700 transition"
+                      title="Nudge Right"
                     >
-                      ↓ Move Down
+                      →
+                    </button>
+                    <button
+                      onClick={() => setFitOffsetY(y => Math.max(-140, y - 15))}
+                      className="py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold text-xs border border-slate-700 transition"
+                      title="Nudge Up"
+                    >
+                      ↑
+                    </button>
+                    <button
+                      onClick={() => setFitOffsetY(y => Math.min(140, y + 15))}
+                      className="py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold text-xs border border-slate-700 transition"
+                      title="Nudge Down"
+                    >
+                      ↓
                     </button>
                   </div>
                 </div>
 
                 {/* Fabric Realism Mode */}
                 <div className="pt-2 border-t border-slate-800/80">
-                  <span className="text-[10px] text-slate-400 block mb-1 uppercase font-mono">Fabric Realism:</span>
+                  <span className="text-[10px] text-slate-400 block mb-1 uppercase font-mono">Fabric Appearance:</span>
                   <div className="grid grid-cols-2 gap-1 font-semibold text-[10px]">
                     <button
                       onClick={() => {
@@ -594,62 +635,78 @@ export const MagicMirror: React.FC<MagicMirrorProps> = ({
                     </button>
                   </div>
                 </div>
+
+                <div className="mt-2 pt-1 border-t border-slate-800/80 text-[9px] text-slate-400 font-mono text-center">
+                  💡 Drag on the screen to align clothes directly on your shoulders
+                </div>
               </div>
             )}
 
-            {/* Center-Bottom Prominent Shutter Button (Manual Capture Only) */}
+            {/* Bottom-Center Prominent Shutter Button (Lenskart Snapshot Style) */}
             {!isLocked && (
-              <div className="absolute bottom-5 left-1/2 -translate-x-1/2 z-20 flex items-center gap-3">
+              <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-20 flex items-center gap-3 pointer-events-auto">
                 <button
                   onClick={handleManualLock}
-                  className="flex items-center gap-2.5 px-6 py-2.5 rounded-2xl bg-gradient-to-r from-[#00a8e1] via-[#0284c7] to-[#38bdf8] hover:from-[#0094c8] hover:to-[#0284c7] text-slate-950 text-xs sm:text-sm font-black shadow-2xl shadow-[#00a8e1]/40 border border-white/20 transition transform hover:scale-105 active:scale-95"
+                  className="flex items-center gap-2 px-6 py-2.5 rounded-full bg-gradient-to-r from-[#00a8e1] to-[#0284c7] hover:from-[#0094c8] hover:to-[#0284c7] text-slate-950 text-xs sm:text-sm font-black shadow-2xl shadow-[#00a8e1]/50 border border-white/20 transition transform hover:scale-105 active:scale-95"
                 >
                   <Camera className="w-4 h-4 fill-current" />
-                  <span>Take Snapshot &amp; Lock Look</span>
-                  {feedback.score > 0 && (
-                    <span className="px-2 py-0.5 rounded-full bg-slate-950/40 text-white font-mono text-xs">
-                      {feedback.score}%
-                    </span>
-                  )}
+                  <span>Snap My Look</span>
                 </button>
               </div>
             )}
 
-            {/* Snapshot Locked Screen */}
-            {isLocked && (
-              <div className="absolute inset-0 z-30 bg-black/80 backdrop-blur-md flex flex-col items-center justify-center p-6 text-center animate-in fade-in duration-300">
-                <div className="w-16 h-16 rounded-full bg-[#00a8e1]/20 border-2 border-[#00a8e1] flex items-center justify-center text-[#00a8e1] mb-3 shadow-[0_0_20px_#00a8e1]">
-                  <CheckCircle2 className="w-8 h-8" />
+            {/* Bottom-Right Subtle Drag Instruction Hint */}
+            <div className="absolute bottom-4 right-4 z-10 pointer-events-none hidden md:block">
+              <span className="text-[10px] text-slate-400 font-mono bg-black/60 px-2.5 py-1 rounded-full border border-slate-800 backdrop-blur-md">
+                👆 Drag on screen to reposition garment
+              </span>
+            </div>
+
+            {/* Snapshot Saved Overlay Modal */}
+            {isLocked && capturedSnapshot && (
+              <div className="absolute inset-0 z-30 bg-black/85 backdrop-blur-md flex flex-col items-center justify-center p-6 text-center animate-in fade-in duration-200">
+                <div className="w-12 h-12 rounded-full bg-emerald-500/20 border-2 border-emerald-400 flex items-center justify-center text-emerald-400 mb-2 shadow-[0_0_15px_rgba(16,185,129,0.4)]">
+                  <CheckCircle2 className="w-6 h-6" />
                 </div>
-                <h3 className="text-2xl sm:text-3xl font-black text-white">
-                  SHOT LOCKED! {activePlayer.name.toUpperCase()} NAILED THE LOOK!
+                <h3 className="text-xl sm:text-2xl font-black text-white">
+                  LOOK CAPTURED!
                 </h3>
-                <p className="text-sm text-slate-300 mt-1 max-w-md">
-                  Accuracy Score: <strong className="text-amber-400">{feedback.score}%</strong> on {currentTarget.name}!
+                <p className="text-xs text-slate-300 mt-0.5">
+                  Wearing <strong>{outfit.name}</strong> by {outfit.designer}
                 </p>
 
-                <div className="flex items-center gap-3 mt-6">
+                {/* Snapshot Preview Card */}
+                <div className="mt-4 max-w-sm rounded-xl overflow-hidden border border-slate-700 shadow-2xl">
+                  <img src={capturedSnapshot} alt="Captured Look" className="w-full h-auto object-cover max-h-[220px]" />
+                </div>
+
+                <div className="flex items-center gap-3 mt-5">
                   <button
                     onClick={handleRetake}
-                    className="px-5 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold transition flex items-center gap-2 border border-slate-700"
+                    className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold transition flex items-center gap-2 border border-slate-700"
                   >
-                    <RotateCcw className="w-4 h-4" />
-                    <span>Retake Pose</span>
+                    <RotateCcw className="w-3.5 h-3.5" />
+                    <span>Try Another Outfit</span>
                   </button>
+
+                  <a
+                    href={capturedSnapshot}
+                    download={`my-${outfit.id}-look.jpg`}
+                    className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold transition flex items-center gap-2 border border-slate-700"
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                    <span>Download</span>
+                  </a>
 
                   <button
                     onClick={() => {
                       sound.playClick();
                       onNextPlayerOrVote();
                     }}
-                    className="px-6 py-3 rounded-xl bg-[#00a8e1] hover:bg-[#0094c8] text-slate-950 text-sm font-black shadow-xl shadow-[#00a8e1]/30 flex items-center gap-2 transition hover:scale-105"
+                    className="px-5 py-2 rounded-xl bg-[#00a8e1] hover:bg-[#0094c8] text-slate-950 text-xs font-black shadow-lg shadow-[#00a8e1]/30 flex items-center gap-1.5 transition hover:scale-105"
                   >
-                    <span>
-                      {activePlayerIndex < totalPlayers - 1 
-                        ? 'Pass Phone to Next Player' 
-                        : 'Proceed to Family Runway Vote!'}
-                    </span>
-                    <ChevronRight className="w-4 h-4" />
+                    <span>Runway Arena</span>
+                    <ChevronRight className="w-3.5 h-3.5" />
                   </button>
                 </div>
               </div>
@@ -659,353 +716,83 @@ export const MagicMirror: React.FC<MagicMirrorProps> = ({
       </div>
 
       {/* =========================================================================
-          STAGE 2: DEDICATED DETAILS SECTION BELOW THE CAMERA 
-          ("jb cam on hota h toh us jaga ki details niche ek section bna vha show kro")
+          BOTTOM LENSKART-STYLE SLIDING CLOTHES TRAY (INSTANT 1-TAP WEAR)
          ========================================================================= */}
-      <div className="max-w-[1700px] mx-auto w-full">
-        {/* Section Header */}
-        <div className="flex items-center justify-between pb-3 mb-4 border-b border-slate-800/80">
+      <div className="max-w-[1700px] mx-auto w-full z-20">
+        <div className="flex items-center justify-between mb-2">
           <div className="flex items-center gap-2">
-            <Sparkles className="w-4 h-4 text-[#00a8e1]" />
-            <h2 className="text-sm font-mono uppercase font-black tracking-widest text-[#38bdf8]">
-              Look Details &amp; Runway Styling Console
-            </h2>
-          </div>
-          <span className="text-xs text-slate-400 font-mono">
-            {cameraActive ? '✓ Camera Active & Tracking Body' : '● Camera Ready'}
-          </span>
-        </div>
-
-        {/* Console Grid: 4 Dedicated Interactive Cards */}
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-          
-          {/* CARD 1: LIVE GARMENT DETAILS & PHOTO */}
-          <div className="p-4 rounded-2xl bg-[#0a101d] border border-slate-800/90 shadow-xl flex flex-col justify-between">
-            <div>
-              <div className="flex items-center justify-between mb-3">
-                <span className="text-[10px] font-mono uppercase font-bold tracking-wider text-slate-400">
-                  Current Garment on Body
-                </span>
-                <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-[#00a8e1]/20 text-[#38bdf8] border border-[#00a8e1]/30">
-                  {outfit.gender === 'female' ? "Women's" : "Men's"}
-                </span>
-              </div>
-
-              {/* Garment Image & Name */}
-              <div className="flex items-center gap-3">
-                {outfit.previewImageUrl ? (
-                  <img
-                    src={outfit.previewImageUrl}
-                    alt={outfit.name}
-                    className="w-16 h-16 rounded-xl object-cover flex-none border border-slate-700 shadow-md"
-                  />
-                ) : (
-                  <div 
-                    className="w-16 h-16 rounded-xl flex-none border border-white/20 shadow-md"
-                    style={{ backgroundColor: outfitColor }}
-                  />
-                )}
-                <div className="min-w-0">
-                  <h3 className="text-sm font-bold text-white truncate leading-snug">
-                    {outfit.name}
-                  </h3>
-                  <p className="text-xs text-[#38bdf8] truncate font-medium">
-                    by {outfit.designer}
-                  </p>
-                  <span className="text-xs font-black text-amber-400 font-mono block mt-0.5">
-                    {outfit.retailPrice}
-                  </span>
-                </div>
-              </div>
-
-              {/* Specs */}
-              <div className="grid grid-cols-2 gap-2 mt-3 pt-3 border-t border-slate-800/80 text-[11px]">
-                <div>
-                  <span className="text-[10px] text-slate-400 uppercase tracking-wider block font-mono">Fabric</span>
-                  <span className="text-slate-200 font-medium truncate block">{outfit.fabric}</span>
-                </div>
-                <div>
-                  <span className="text-[10px] text-slate-400 uppercase tracking-wider block font-mono">Occasion</span>
-                  <span className="text-slate-200 font-medium truncate block">{outfit.occasion}</span>
-                </div>
-              </div>
-
-              {/* Real Photo Quality Indicator */}
-              <div className="mt-3 p-2 rounded-xl bg-emerald-950/40 border border-emerald-500/30 flex items-center justify-between text-[11px]">
-                <div className="flex items-center gap-1.5 text-emerald-300 font-medium">
-                  <Check className="w-3.5 h-3.5 text-emerald-400 flex-none" />
-                  <span>Real Catalog Photo Overlay</span>
-                </div>
-                <button
-                  onClick={() => {
-                    sound.playClick();
-                    setBlendMode(b => b === 'original' ? 'tint' : 'original');
-                  }}
-                  className="text-[10px] font-bold px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-200 hover:bg-emerald-500/30 transition border border-emerald-500/30"
-                >
-                  {blendMode === 'original' ? 'Original Colors' : 'Tint Active'}
-                </button>
-              </div>
-            </div>
-
-            {/* Garment Color Swatches */}
-            <div className="mt-4 pt-3 border-t border-slate-800/80">
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-[10px] text-slate-400 uppercase tracking-wider font-mono">
-                  {blendMode === 'original' ? 'Apply Color Tint' : 'Selected Tint'}
-                </span>
-                <button
-                  onClick={onOpenVoice}
-                  className="text-[10px] text-[#38bdf8] hover:underline flex items-center gap-1 font-mono"
-                >
-                  <Mic className="w-3 h-3 text-[#00a8e1]" />
-                  <span>Voice</span>
-                </button>
-              </div>
-              <div className="flex items-center gap-2">
-                {colorOptions.map((c) => {
-                  const isSelected = outfitColor.toLowerCase() === c.hex.toLowerCase();
-                  return (
-                    <button
-                      key={c.hex}
-                      onClick={() => {
-                        sound.playColorChime();
-                        setBlendMode('tint');
-                        onChangeColor(c.hex);
-                      }}
-                      title={c.label}
-                      className={`w-7 h-7 rounded-full border transition-all ${
-                        isSelected && blendMode === 'tint'
-                          ? 'border-white scale-125 shadow-[0_0_10px_#00a8e1] ring-2 ring-[#00a8e1]'
-                          : 'border-white/20 hover:scale-110 opacity-80 hover:opacity-100'
-                      }`}
-                      style={{ backgroundColor: c.hex }}
-                    />
-                  );
-                })}
-              </div>
-            </div>
+            <span className="text-[11px] font-mono uppercase font-bold tracking-wider text-slate-400">
+              Select Outfit to Wear (Tap to Wear on Cam):
+            </span>
           </div>
 
-          {/* CARD 2: REAL-TIME POSE COACH & ACCURACY SCORE */}
-          <div className="p-4 rounded-2xl bg-[#0a101d] border border-slate-800/90 shadow-xl flex flex-col justify-between">
-            <div>
-              <div className="flex items-center justify-between mb-3">
-                <span className="text-[10px] font-mono uppercase font-bold tracking-wider text-slate-400">
-                  AI Pose Coach &amp; Score
-                </span>
-                <span className="text-[10px] text-slate-400 font-mono">
-                  Target: {currentTarget.difficulty}
-                </span>
-              </div>
-
-              {/* Big Score Gauge */}
-              <div className="flex items-center gap-4">
-                <div className="relative w-20 h-20 flex-none rounded-full bg-slate-950 border border-slate-800 flex items-center justify-center shadow-lg">
-                  <svg className="absolute inset-0 w-full h-full -rotate-90" viewBox="0 0 100 100">
-                    <circle cx="50" cy="50" r="40" fill="none" stroke="#1e293b" strokeWidth="8" />
-                    <circle
-                      cx="50"
-                      cy="50"
-                      r="40"
-                      fill="none"
-                      stroke={feedback.isReadyToLock ? '#eab308' : '#00a8e1'}
-                      strokeWidth="8"
-                      strokeDasharray="251"
-                      strokeDashoffset={251 - (251 * feedback.score) / 100}
-                      strokeLinecap="round"
-                      className="transition-all duration-200"
-                    />
-                  </svg>
-                  <div className="text-center">
-                    <span className="text-xl font-black font-mono text-white leading-none">
-                      {feedback.score}
-                    </span>
-                    <span className="text-[9px] font-bold text-slate-400 block uppercase font-mono">
-                      %
-                    </span>
-                  </div>
-                </div>
-
-                <div className="flex-1 min-w-0">
-                  <span className="text-xs font-bold text-white block">
-                    {currentTarget.name}
-                  </span>
-                  <p className="text-[11px] text-[#38bdf8] font-medium leading-snug mt-1">
-                    {feedback.tip}
-                  </p>
-                </div>
-              </div>
-            </div>
-
-            {/* Manual Shutter Shutter Trigger Button */}
-            <div className="mt-4 pt-3 border-t border-slate-800/80">
-              <div className="flex items-center justify-between text-[10px] text-slate-400 font-mono mb-2">
-                <span>Shutter Status</span>
-                <span className={feedback.score >= 70 ? 'text-emerald-400 font-bold' : 'text-slate-400'}>
-                  {feedback.score >= 70 ? 'Pose Aligned! Ready' : 'Align Pose'}
-                </span>
-              </div>
+          {/* Quick Filter Pills */}
+          <div className="flex items-center gap-1 text-[10px] font-semibold">
+            {(['all', 'male', 'female', 'festive', 'formal'] as const).map((filter) => (
               <button
-                onClick={handleManualLock}
-                className="w-full py-2 px-3 rounded-xl bg-slate-800 hover:bg-[#00a8e1] hover:text-slate-950 text-slate-200 text-xs font-bold transition flex items-center justify-center gap-2 border border-slate-700 shadow-sm"
-              >
-                <Camera className="w-3.5 h-3.5" />
-                <span>Snap Pose Now ({feedback.score}%)</span>
-              </button>
-            </div>
-          </div>
-
-          {/* CARD 3: QUICK WEAR WARDROBE RAIL (MEN & WOMEN) */}
-          <div className="p-4 rounded-2xl bg-[#0a101d] border border-slate-800/90 shadow-xl flex flex-col justify-between">
-            <div>
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-[10px] font-mono uppercase font-bold tracking-wider text-slate-400">
-                  Switch Clothes (Wear on Cam)
-                </span>
-                {/* Male / Female / All filter */}
-                <div className="flex items-center gap-1 text-[9px] font-bold">
-                  <button
-                    onClick={() => setRailGenderFilter('all')}
-                    className={`px-1.5 py-0.5 rounded transition ${
-                      railGenderFilter === 'all' ? 'bg-[#00a8e1] text-slate-950' : 'text-slate-400 hover:text-white'
-                    }`}
-                  >
-                    All
-                  </button>
-                  <button
-                    onClick={() => setRailGenderFilter('male')}
-                    className={`px-1.5 py-0.5 rounded transition ${
-                      railGenderFilter === 'male' ? 'bg-[#00a8e1] text-slate-950' : 'text-slate-400 hover:text-white'
-                    }`}
-                  >
-                    Men
-                  </button>
-                  <button
-                    onClick={() => setRailGenderFilter('female')}
-                    className={`px-1.5 py-0.5 rounded transition ${
-                      railGenderFilter === 'female' ? 'bg-[#00a8e1] text-slate-950' : 'text-slate-400 hover:text-white'
-                    }`}
-                  >
-                    Women
-                  </button>
-                </div>
-              </div>
-
-              {/* Scrollable Clothes List with Real Photos */}
-              <div className="space-y-1.5 max-h-[155px] overflow-y-auto no-scrollbar pr-1">
-                {filteredRailOutfits.map((item) => {
-                  const isCurrent = item.id === outfit.id;
-                  return (
-                    <button
-                      key={item.id}
-                      onClick={() => {
-                        sound.playHighlight();
-                        if (onSelectOutfit) onSelectOutfit(item);
-                        onChangeColor(item.defaultColor);
-                      }}
-                      className={`w-full p-1.5 rounded-xl border flex items-center justify-between text-left transition ${
-                        isCurrent
-                          ? 'bg-[#00a8e1]/15 border-[#00a8e1] text-white shadow-sm'
-                          : 'bg-slate-950/60 border-slate-800/80 text-slate-300 hover:bg-slate-800'
-                      }`}
-                    >
-                      <div className="flex items-center gap-2 min-w-0">
-                        {item.previewImageUrl ? (
-                          <img
-                            src={item.previewImageUrl}
-                            alt={item.name}
-                            className="w-8 h-8 rounded-lg object-cover flex-none border border-slate-700"
-                          />
-                        ) : (
-                          <span
-                            className="w-8 h-8 rounded-lg flex-none border border-white/20"
-                            style={{ backgroundColor: item.defaultColor }}
-                          />
-                        )}
-                        <div className="min-w-0">
-                          <span className="text-xs font-semibold truncate block">
-                            {item.name}
-                          </span>
-                          <span className="text-[10px] text-slate-400 font-mono">
-                            {item.gender === 'female' ? 'Women' : 'Men'} • {item.category}
-                          </span>
-                        </div>
-                      </div>
-                      {isCurrent && (
-                        <span className="text-[10px] bg-[#00a8e1] text-slate-950 font-bold px-1.5 py-0.5 rounded">
-                          Wearing
-                        </span>
-                      )}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-
-            <div className="mt-3 pt-2 border-t border-slate-800/80">
-              <span className="text-[10px] text-slate-400 block text-center font-mono">
-                Click any outfit to instantly wear it on your camera!
-              </span>
-            </div>
-          </div>
-
-          {/* CARD 4: TARGET POSE & RUNWAY PASS */}
-          <div className="p-4 rounded-2xl bg-[#0a101d] border border-slate-800/90 shadow-xl flex flex-col justify-between">
-            <div>
-              <div className="flex items-center justify-between mb-3">
-                <span className="text-[10px] font-mono uppercase font-bold tracking-wider text-slate-400">
-                  Target Pose Selection
-                </span>
-                <span className="text-[10px] text-[#38bdf8] font-mono font-bold">
-                  {POSE_TARGETS.length} Guides
-                </span>
-              </div>
-
-              {/* Pose Choices */}
-              <div className="space-y-1.5 max-h-[145px] overflow-y-auto no-scrollbar">
-                {POSE_TARGETS.map((p) => {
-                  const isSelected = p.id === currentTarget.id;
-                  return (
-                    <button
-                      key={p.id}
-                      onClick={() => {
-                        sound.playClick();
-                        setCurrentTarget(p);
-                      }}
-                      className={`w-full p-2 rounded-xl text-xs font-semibold text-left border transition ${
-                        isSelected
-                          ? 'bg-[#00a8e1]/15 border-[#00a8e1] text-[#38bdf8]'
-                          : 'bg-slate-950/60 border-slate-800/80 text-slate-400 hover:bg-slate-800'
-                      }`}
-                    >
-                      <div className="flex items-center justify-between">
-                        <span className="truncate">{p.name}</span>
-                        <span className="text-[10px] font-mono opacity-70">{p.difficulty}</span>
-                      </div>
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-
-            {/* Action Button: Next Player or Vote */}
-            <div className="mt-3 pt-3 border-t border-slate-800/80">
-              <button
+                key={filter}
                 onClick={() => {
                   sound.playClick();
-                  onNextPlayerOrVote();
+                  setRailFilter(filter);
                 }}
-                className="w-full py-2.5 px-4 rounded-xl bg-[#00a8e1] hover:bg-[#0094c8] text-slate-950 font-black text-xs uppercase tracking-wider shadow-lg shadow-[#00a8e1]/25 flex items-center justify-center gap-1.5 transition hover:scale-[1.02]"
+                className={`px-2.5 py-1 rounded-lg capitalize transition ${
+                  railFilter === filter
+                    ? 'bg-[#00a8e1] text-slate-950 font-bold shadow-sm'
+                    : 'bg-slate-900/80 text-slate-400 hover:text-white border border-slate-800'
+                }`}
               >
-                <span>
-                  {activePlayerIndex < totalPlayers - 1 ? 'Next Family Member' : 'Runway Vote Arena'}
-                </span>
-                <ChevronRight className="w-4 h-4" />
+                {filter === 'male' ? "Men's" : filter === 'female' ? "Women's" : filter}
               </button>
-            </div>
+            ))}
           </div>
+        </div>
 
+        {/* Horizontal Scrollable Clothes Tray */}
+        <div className="flex items-center gap-3 overflow-x-auto no-scrollbar py-1 pb-2">
+          {filteredRailOutfits.map((item) => {
+            const isCurrent = item.id === outfit.id;
+            return (
+              <button
+                key={item.id}
+                onClick={() => {
+                  sound.playHighlight();
+                  if (onSelectOutfit) onSelectOutfit(item);
+                  onChangeColor(item.defaultColor);
+                }}
+                className={`flex-none w-44 p-2 rounded-2xl border text-left transition-all duration-200 group ${
+                  isCurrent
+                    ? 'bg-[#0c1626] border-[#00a8e1] ring-2 ring-[#00a8e1]/40 shadow-lg shadow-[#00a8e1]/20 -translate-y-1'
+                    : 'bg-[#0a0f1d] border-slate-800/90 hover:border-slate-700 hover:bg-slate-900/80'
+                }`}
+              >
+                {/* Outfit Thumbnail */}
+                <div className="relative aspect-[4/3] w-full rounded-xl bg-slate-950 overflow-hidden mb-2">
+                  <img
+                    src={item.previewImageUrl}
+                    alt={item.name}
+                    className="w-full h-full object-cover transition duration-300 group-hover:scale-105"
+                  />
+                  {isCurrent && (
+                    <div className="absolute top-1.5 right-1.5 z-10 px-2 py-0.5 rounded-full bg-[#00a8e1] text-slate-950 font-black text-[9px] flex items-center gap-1 shadow-md">
+                      <Check className="w-2.5 h-2.5" />
+                      <span>Wearing</span>
+                    </div>
+                  )}
+                  <span className="absolute bottom-1.5 left-1.5 z-10 text-[9px] font-mono px-1.5 py-0.5 rounded bg-black/80 text-amber-300 border border-amber-500/30">
+                    {item.retailPrice}
+                  </span>
+                </div>
+
+                {/* Outfit Name & Designer */}
+                <h4 className="text-xs font-bold text-white truncate leading-tight">
+                  {item.name}
+                </h4>
+                <p className="text-[10px] text-slate-400 truncate mt-0.5">
+                  {item.designer}
+                </p>
+              </button>
+            );
+          })}
         </div>
       </div>
     </div>
